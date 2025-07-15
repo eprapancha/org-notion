@@ -21,6 +21,17 @@
 
 (require 'json)
 (require 'url-http)
+(require 'auth-source)
+
+;;; Custom Variables
+(defcustom org-notion-api-token nil
+  "The Notion API token.
+This is a secret token for an 'Internal Integration'. It is
+recommended to set this via a secure method like `auth-source`
+rather than customizing it directly here. If this variable is nil,
+the tool will attempt to retrieve the token from `auth-source`."
+  :type 'string
+  :group 'org-notion)
 
 ;;; Constants
 
@@ -30,36 +41,39 @@
 (defconst notion-api-base-url "https://api.notion.com/v1/"
   "The base URL for all Notion API endpoints.")
 
-;;; Core API Functions (Stubs)
+;;; Core API Functions
 
 (defun notion-api--get-auth-token ()
   "Retrieve the Notion API token.
 This function will be responsible for securely fetching the token,
 ideally from `auth-source` (e.g., ~/.authinfo.gpg). For now,
 it can prompt the user if `org-notion-api-token` is not set."
-  ;; TODO: Implement secure token retrieval from auth-source.
   (or org-notion-api-token
-      (read-passwd "Notion API Token: ")))
+      (let ((found (auth-source-search :host "api.notion.com" :user "token")))
+        (if found
+            (funcall (plist-get (car found) :secret))
+          (read-passwd "Notion API Token: ")))))
 
 (defun notion-api--request (method endpoint &optional data)
   "Send a request to the Notion API and parse the JSON response.
 METHOD is the HTTP method (e.g., 'GET', 'POST', 'PATCH').
 ENDPOINT is the API endpoint path (e.g., \"databases/DB_ID/query\").
 DATA is an optional alist to be encoded as the JSON request body."
-  ;; TODO: Implement the actual HTTP request using `url-retrieve-synchronously`
-  ;; or a more robust library like `request.el`.
-  ;; This stub should handle:
-  ;; 1. Constructing the full URL.
-  ;; 2. Setting required headers:
-  ;;    - \"Authorization\": \"Bearer <TOKEN>\"
-  ;;    - \"Notion-Version\": notion-api-version
-  ;;    - \"Content-Type\": \"application/json\"
-  ;; 3. Encoding `data` as a JSON string if present.
-  ;; 4. Sending the request.
-  ;; 5. Parsing the JSON response into an alist.
-  ;; 6. Handling API errors gracefully.
-  (message "Simulating API call: %s %s" method endpoint)
-  '())
+  (let* ((url (concat notion-api-base-url endpoint))
+         (token (notion-api--get-auth-token))
+         (url-request-method method)
+         (url-request-extra-headers
+          `(("Authorization" . ,(format "Bearer %s" token))
+            ("Notion-Version" . ,notion-api-version)
+            ("Content-Type" . "application/json")))
+         (url-request-data (and data (json-encode data))))
+    (with-current-buffer (url-retrieve-synchronously url)
+      (goto-char (point-min))
+      (when (re-search-forward "^$" nil t)
+        (let ((json-object-type 'alist)
+              (json-key-type 'symbol))
+          (json-read))))))
+
 
 (defun notion-api/query-database (db-id)
   "Query a Notion database to retrieve a list of its pages.

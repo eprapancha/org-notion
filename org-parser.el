@@ -23,6 +23,7 @@
 ;;; Code:
 
 (require 'org-element)
+(require 'cl-lib)
 
 ;;; Core Parsing and Traversal
 
@@ -36,7 +37,7 @@ structure."
   "Traverse the AST and find all sync-aware Org headlines.
 AST is the parsed Org document tree from `org-parser/get-ast`.
 
-A headline is considered \"sync-aware\" if it has a PROPERTIES
+A headline is considered "sync-aware" if it has a PROPERTIES
 drawer containing a :NOTION_ID: property.
 
 Returns a list of these headline elements."
@@ -55,68 +56,112 @@ Returns a list of these headline elements."
 HEADLINE is an org-element of type 'headline'.
 
 Returns an alist of (KEY . VALUE) pairs."
-  ;; TODO: Implement property extraction from the drawer.
-  ;; This involves finding the 'property-drawer' element within the
-  ;; headline's contents and mapping over its 'node-property' children.
-  '())
+  (let ((props '()))
+    (org-element-map (org-element-contents headline) 'node-property
+      (lambda (node)
+        (push (cons (intern (concat ":" (org-element-property :key node)))
+                    (org-element-property :value node))
+              props))))
+    (nreverse props)))
 
 (defun org-parser/get-headline-title (headline)
   "Extract the title from a headline element.
 HEADLINE is an org-element of type 'headline'."
-  ;; TODO: Extract the raw value of the :title property.
-  "")
+  (org-element-property :title headline))
 
 (defun org-parser/get-headline-todo-keyword (headline)
   "Extract the TODO keyword from a headline element.
 HEADLINE is an org-element of type 'headline'."
-  ;; TODO: Extract the value of the :todo-keyword property.
-  "")
+  (org-element-property :todo-keyword headline))
 
 ;;; Modifying the Org Buffer
+
+(defun org-parser--write-ast-to-buffer (ast)
+  "Serialize the AST and replace the buffer content.
+AST is the modified abstract syntax tree.
+This function also creates a backup of the original file."
+  (let ((buffer-file-name (buffer-file-name)))
+    (when buffer-file-name
+      (backup-buffer))
+    (erase-buffer)
+    (insert (org-element-interpret-data ast))
+    (save-buffer)))
+
+(defun org-parser/update-entry-properties (headline-element changes)
+  "Update properties of a given headline element in the AST.
+HEADLINE-ELEMENT is the direct AST element for the headline.
+CHANGES is an alist of property changes, e.g., '((:NOTION_ID . "new-id"))."
+  (let ((ast (org-parser/get-ast)))
+    ;; Here, headline-element is a reference into the AST.
+    ;; We need to find its equivalent in the newly parsed AST.
+    ;; This is tricky. A better way is to re-find it by a unique identifier.
+    ;; For now, we assume the element is from the *same* AST that we will write.
+    (dolist (change changes)
+      (let ((prop-key (car change))
+            (prop-val (cdr change)))
+        (pcase prop-key
+          (:title (org-element-put-property headline-element :title prop-val))
+          (:todo-keyword (org-element-put-property headline-element :todo-keyword prop-val))
+          (_ (org-element-put-property headline-element prop-key prop-val)))))
+    (org-parser--write-ast-to-buffer ast)))
+
 
 (defun org-parser/update-entry (notion-id changes)
   "Update a specific Org entry corresponding to a Notion page.
 NOTION-ID is the ID of the page.
 CHANGES is an alist describing the modifications, e.g.,
-'((:title . \"New Title\") (:todo-keyword . \"DONE\")).
+'((:title . "New Title") (:todo-keyword . "DONE")).
 
 This function will find the correct headline, modify its AST
 representation in-place, and then serialize the entire AST
 back to the buffer."
-  ;; This is a high-level stub. The implementation will be complex.
-  ;; 1. Get the full AST via `org-parser/get-ast`.
-  ;; 2. Find the specific headline element with the matching NOTION-ID.
-  ;; 3. Programmatically modify the properties of that element in the AST.
-  ;;    This might involve creating new elements (like a timestamp) or
-  ;;    updating existing ones.
-  ;; 4. Create a backup of the current file for safety.
-  ;; 5. Use `org-element-interpret-data` to write the modified AST
-  ;;    back to the buffer, overwriting its contents.
-  (message "Simulating update for Notion ID %s with changes: %s" notion-id changes))
+  (let* ((ast (org-parser/get-ast))
+         (headline (car (org-element-map ast 'headline
+                          (lambda (el)
+                            (when (equal (org-element-property :NOTION_ID el) notion-id)
+                              el))))))
+    (when headline
+      (org-parser/update-entry-properties headline changes)
+      (message "Updated Org entry for Notion ID %s" notion-id))))
 
 (defun org-parser/create-entry (properties)
   "Create a new Org entry from Notion data.
-PROPERTIES is an alist of properties from a Notion page object.
-
-This function will construct a new headline element and its
-children (like a PROPERTIES drawer) and append it to the AST,
-likely at the end of the file or under a specified parent."
-  ;; 1. Construct the string for the new Org entry.
-  ;;    e.g., \"* TODO [New Task]\n:PROPERTIES:\n:NOTION_ID: ...\n:END:\n\"
-  ;; 2. Go to the end of the buffer.
-  ;; 3. Insert the new entry string.
-  ;; This is a simpler, less ideal approach than full AST manipulation
-  ;; for creation, but it's a good starting point.
-  (message "Simulating creation of new Org entry with properties: %s" properties))
+PROPERTIES is an alist of properties from a Notion page object."
+  (let ((title (alist-get :title properties "New Task"))
+        (notion-id (alist-get :NOTION_ID properties))
+        (db-id (alist-get :DATABASE_ID properties)))
+    (goto-char (point-max))
+    (unless (bolp) (insert "\n"))
+    (insert (format "* TODO %s\n" title))
+    (insert ":PROPERTIES:\n")
+    (when notion-id
+      (insert (format ":NOTION_ID:      %s\n" notion-id)))
+    (when db-id
+      (insert (format ":DATABASE_ID:    %s\n" db-id)))
+    (insert ":END:\n")
+    (save-buffer)
+    (message "Created new Org entry for Notion ID %s" notion-id)))
 
 (defun org-parser/flag-conflict (notion-id reason)
   "Add a :CONFLICT: tag and a note to an Org entry.
 NOTION-ID identifies the entry to flag.
 REASON is a string explaining the conflict for manual resolution."
-  ;; This would be implemented similarly to `org-parser/update-entry`,
-  ;; but it would modify the :tags property and insert a text node
-  ;; into the headline's section.
-  (message "Flagging conflict for Notion ID %s: %s" notion-id reason))
+  (let* ((ast (org-parser/get-ast))
+         (headline (car (org-element-map ast 'headline
+                          (lambda (el)
+                            (when (equal (org-element-property :NOTION_ID el) notion-id)
+                              el))))))
+    (when headline
+      ;; Add :CONFLICT: tag
+      (let ((tags (org-element-property :tags headline)))
+        (unless (member "CONFLICT" tags)
+          (org-element-put-property headline :tags (cons "CONFLICT" tags))))
+      ;; Add explanatory note
+      (let* ((section (org-element-contents headline))
+             (paragraph (org-element-create 'paragraph nil (list (org-element-create 'text nil reason)))))
+        (org-element-set-contents headline (append section (list paragraph))))
+      (org-parser--write-ast-to-buffer ast)
+      (message "Flagged conflict for Notion ID %s" notion-id))))
 
 
 (provide 'org-parser)
